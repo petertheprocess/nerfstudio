@@ -560,7 +560,7 @@ class Trainer:
             group = "Eval Images"
             for image_name, image in images_dict.items():
                 writer.put_image(name=group + "/" + image_name, image=image, step=step)
-            writer.put_3d_rgb(name=group + "/Sample Point Cloud", point_cloud=self._samples_position_to_point_cloud(), step=step
+            writer.put_3d_rgb(name=group + "/Sample Point Cloud", point_cloud=self._samples_position_to_point_cloud(), step=step)
 
         # all eval images
         if step_check(step, self.config.steps_per_eval_all_images):
