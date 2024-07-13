@@ -26,6 +26,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Lock
 from typing import DefaultDict, Dict, List, Literal, Optional, Tuple, Type, cast
+from torch import Tensor
+from jaxtypes import Float
 
 import torch
 import viser
@@ -45,6 +47,7 @@ from nerfstudio.utils.rich_utils import CONSOLE
 from nerfstudio.utils.writer import EventName, TimeWriter
 from nerfstudio.viewer.viewer import Viewer as ViewerState
 from nerfstudio.viewer_legacy.server.viewer_state import ViewerLegacyState
+from nerfstudio.cameras.rays import RaySamples, Frustums
 
 TRAIN_INTERATION_OUTPUT = Tuple[torch.Tensor, Dict[str, torch.Tensor], Dict[str, torch.Tensor]]
 TORCH_DEVICE = str
@@ -109,6 +112,7 @@ class Trainer:
     pipeline: VanillaPipeline
     optimizers: Optimizers
     callbacks: List[TrainingCallback]
+    point_samples: Dict[Tuple[float, float, float], int] # variable to store point samples for visualization
 
     def __init__(self, config: TrainerConfig, local_rank: int = 0, world_size: int = 1) -> None:
         self.train_lock = Lock()
@@ -493,8 +497,10 @@ class Trainer:
         cpu_or_cuda_str = "cpu" if cpu_or_cuda_str == "mps" else cpu_or_cuda_str
 
         with torch.autocast(device_type=cpu_or_cuda_str, enabled=self.mixed_precision):
-            _, loss_dict, metrics_dict = self.pipeline.get_train_loss_dict(step=step)
+            model_output, loss_dict, metrics_dict = self.pipeline.get_train_loss_dict(step=step)
             loss = functools.reduce(torch.add, loss_dict.values())
+        ray_samples_list = model_output["ray_samples_list"]
+        self._update_samples_position(ray_samples_list)
         self.grad_scaler.scale(loss).backward()  # type: ignore
         needs_step = [
             group
@@ -539,6 +545,7 @@ class Trainer:
             writer.put_dict(name="Eval Loss Dict", scalar_dict=eval_loss_dict, step=step)
             writer.put_dict(name="Eval Metrics Dict", scalar_dict=eval_metrics_dict, step=step)
 
+
         # one eval image
         if step_check(step, self.config.steps_per_eval_image):
             with TimeWriter(writer, EventName.TEST_RAYS_PER_SEC, write=False) as test_t:
@@ -553,8 +560,37 @@ class Trainer:
             group = "Eval Images"
             for image_name, image in images_dict.items():
                 writer.put_image(name=group + "/" + image_name, image=image, step=step)
+            writer.put_3d_rgb(name=group + "/Sample Point Cloud", point_cloud=self._samples_position_to_point_cloud(), step=step
 
         # all eval images
         if step_check(step, self.config.steps_per_eval_all_images):
             metrics_dict = self.pipeline.get_average_eval_image_metrics(step=step)
             writer.put_dict(name="Eval Images Metrics Dict (all images)", scalar_dict=metrics_dict, step=step)
+
+    def _update_samples_position(self, samples_list: List[RaySamples]) -> None:
+        """Update the samples position for debugging purposes"""
+        # only consider the last proposal samples
+        samples = samples_list[-1]
+        positions = samples.frustums.get_positions()
+        # convert positions to list of tuples
+        positions = [tuple(position.cpu().detach()) for position in positions]
+        for position in positions:
+            if position not in self.point_samples:
+                self.point_samples[position] = 1
+            else:
+                self.point_samples[position] += 1
+
+    def _samples_position_to_point_cloud(self) -> Float[Tensor, "N 6"]:
+        """Draw the samples position for debugging purposes"""
+        max_samples = max(self.point_samples.values())
+        # color map for the points, 0-1 to rgb
+        import matplotlib.cm as cm
+        import numpy as np
+        cmap = cm.get_cmap("jet")
+        pcl = [
+            position + (cmap(count / max_samples)[:3],)
+            for position, count in self.point_samples.items()
+        ]
+        pcl = np.array(pcl)
+        return pcl
+        

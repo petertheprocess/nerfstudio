@@ -65,6 +65,7 @@ class EventType(enum.Enum):
     SCALAR = "write_scalar"
     DICT = "write_scalar_dict"
     CONFIG = "write_config"
+    POINTCLOUD = "write_3d_rgb"
 
 
 @check_main_thread
@@ -79,6 +80,19 @@ def put_image(name, image: Float[Tensor, "H W C"], step: int):
         name = name.value
 
     EVENT_STORAGE.append({"name": name, "write_type": EventType.IMAGE, "event": image.detach().cpu(), "step": step})
+
+@check_main_thread
+def put_3d_rgb(name, points: Float[Tensor, "N 6"], step: int):
+    """Setter function to place images into the queue to be written out
+
+    Args:
+        image: image to write out
+        step: step associated with image
+    """
+    if isinstance(name, EventName):
+        name = name.value
+
+    EVENT_STORAGE.append({"name": name, "write_type": EventType.POINTCLOUD, "event": points.detach().cpu(), "step": step})
 
 
 @check_main_thread
@@ -238,6 +252,17 @@ class Writer:
     """Writer class"""
 
     @abstractmethod
+    def write_3d_rgb(self, name: str, points: Float[Tensor, "N 6"], step: int) -> None:
+        """method to write out 3D RGB points
+
+        Args:
+            name: data identifier
+            points: 3D points to write
+            step: the time step to log
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     def write_image(self, name: str, image: Float[Tensor, "H W C"], step: int) -> None:
         """method to write out image
 
@@ -313,7 +338,10 @@ class WandbWriter(Writer):
             name=os.environ.get("WANDB_NAME", experiment_name),
             reinit=True,
         )
+    def write_3d_rgb(self, name: str, points: Float[Tensor, "N 6"], step: int) -> None:
+        import wandb  # wandb is slow to import, so we only import it if we need it.
 
+        wandb.log({name: wandb.Object3D(points)}, step=step)
     def write_image(self, name: str, image: Float[Tensor, "H W C"], step: int) -> None:
         import wandb  # wandb is slow to import, so we only import it if we need it.
 
