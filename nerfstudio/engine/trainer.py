@@ -27,7 +27,7 @@ from pathlib import Path
 from threading import Lock
 from typing import DefaultDict, Dict, List, Literal, Optional, Tuple, Type, cast
 from torch import Tensor
-from jaxtypes import Float
+from jaxtyping import Float
 
 import torch
 import viser
