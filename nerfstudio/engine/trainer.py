@@ -49,6 +49,8 @@ from nerfstudio.viewer.viewer import Viewer as ViewerState
 from nerfstudio.viewer_legacy.server.viewer_state import ViewerLegacyState
 from nerfstudio.cameras.rays import RaySamples, Frustums
 
+import rerun as rr
+
 TRAIN_INTERATION_OUTPUT = Tuple[torch.Tensor, Dict[str, torch.Tensor], Dict[str, torch.Tensor]]
 TORCH_DEVICE = str
 
@@ -145,6 +147,8 @@ class Trainer:
         # used to keep track of the current step
         self.step = 0
 
+        # self.point_samples = {}
+
     def setup(self, test_mode: Literal["test", "val", "inference"] = "val") -> None:
         """Setup the Trainer by calling other setup functions.
 
@@ -218,6 +222,12 @@ class Trainer:
         )
         writer.put_config(name="config", config_dict=dataclasses.asdict(self.config), step=0)
         profiler.setup_profiler(self.config.logging, writer_log_path)
+
+        if self.config.rerun_log_samples:
+            import rerun as rr
+            rr.init("nerf_samples")
+            rr.save(os.path.join(self.config.output_dir, "rerun_samples.rrd"))
+            
 
     def setup_optimizers(self) -> Optimizers:
         """Helper to set up the optimizers
@@ -499,8 +509,16 @@ class Trainer:
         with torch.autocast(device_type=cpu_or_cuda_str, enabled=self.mixed_precision):
             model_output, loss_dict, metrics_dict = self.pipeline.get_train_loss_dict(step=step)
             loss = functools.reduce(torch.add, loss_dict.values())
-        ray_samples_list = model_output["ray_samples_list"]
-        self._update_samples_position(ray_samples_list)
+        if self.config.rerun_log_samples:
+            # rerun the pipeline to get the samples
+            rr.set_time_sequence("iteration_step", step)
+            ray_samples_list = model_output["ray_samples_list"]
+            for i, samples in enumerate(ray_samples_list):
+                rr.log(f"ray_samples_{i}", 
+                       rr.Points3D(samples.frustums.get_positions().cpu().detach().numpy())
+                )
+
+        # self._update_samples_position(ray_samples_list) #TODO: visualize the samples position in rerun viewer{TSC}
         self.grad_scaler.scale(loss).backward()  # type: ignore
         needs_step = [
             group
@@ -567,18 +585,19 @@ class Trainer:
             metrics_dict = self.pipeline.get_average_eval_image_metrics(step=step)
             writer.put_dict(name="Eval Images Metrics Dict (all images)", scalar_dict=metrics_dict, step=step)
 
-    def _update_samples_position(self, samples_list: List[RaySamples]) -> None:
-        """Update the samples position for debugging purposes"""
-        # only consider the last proposal samples
-        samples = samples_list[-1]
-        positions = samples.frustums.get_positions()
-        # convert positions to list of tuples
-        positions = [tuple(position.cpu().detach()) for position in positions]
-        for position in positions:
-            if position not in self.point_samples:
-                self.point_samples[position] = 1
-            else:
-                self.point_samples[position] += 1
+    # # TODO{TSC}: visualize the samples position in rerun viewer
+    # def _update_samples_position(self, samples_list: List[RaySamples]) -> None:
+    #     """Update the samples position for debugging purposes"""
+    #     # only consider the last proposal samples
+    #     samples = samples_list[-1]
+    #     positions = samples.frustums.get_positions()
+    #     # convert positions to list of tuples
+    #     positions = [tuple(position.cpu().detach()) for position in positions]
+    #     for position in positions:
+    #         if position not in self.point_samples:
+    #             self.point_samples[position] = 1
+    #         else:
+    #             self.point_samples[position] += 1
 
     def _samples_position_to_point_cloud(self) -> Float[Tensor, "N 6"]:
         """Draw the samples position for debugging purposes"""

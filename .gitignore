@@ -169,8 +169,9 @@ renders/
 events.out.*
 
 # Data
-/data
-
+# /data
+/nerfstudio/nerfstudio
+/nerfstudio/data
 # Misc
 old/
 temp*
