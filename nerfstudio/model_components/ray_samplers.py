@@ -151,6 +151,29 @@ class UniformSampler(SpacedSampler):
             single_jitter=single_jitter,
         )
 
+class SquareSampler(SpacedSampler):
+    """Square sample along a ray
+
+    Args:
+        num_samples: Number of samples per ray
+        train_stratified: Use stratified sampling during training. Defaults to True
+        single_jitter: Use a same random jitter for all samples along a ray. Defaults to False
+    """
+
+    def __init__(
+        self,
+        num_samples: Optional[int] = None,
+        train_stratified=True,
+        single_jitter=False,
+    ) -> None:
+        super().__init__(
+            num_samples=num_samples,
+            spacing_fn=lambda x: x**2,
+            spacing_fn_inv=torch.sqrt,
+            train_stratified=train_stratified,
+            single_jitter=single_jitter,
+        )
+
 
 class LinearDisparitySampler(SpacedSampler):
     """Sample linearly in disparity along a ray
