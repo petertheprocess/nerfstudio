@@ -226,7 +226,19 @@ class Trainer:
         if self.config.rerun_log_samples:
             import rerun as rr
             rr.init("nerf_samples")
-            rr.save(os.path.join(self.config.output_dir, "rerun_samples.rrd"))
+            rr.save(os.path.join(self.base_dir, "rerun_samples.rrd"))
+            self.point_samples_dict = {}
+            self.samples_count_max = 0 # for color mapping
+            # sample from a aabb box with 20*20*20 points, and make a dict to store each sample fall into which voxel
+            self.aabb: Float[Tensor, "2 3"] = self.pipeline.datamanager.train_dataset.scene_box.aabb
+            # sample from a aabb box with 20*20*20 points
+            points_per_dim = 20
+            aabb_len = self.aabb[1] - self.aabb[0]
+            self.samples_dict_step: Float[Tensor, "3"] = aabb_len / points_per_dim
+            for x in range(points_per_dim):
+                for y in range(points_per_dim):
+                    for z in range(points_per_dim):
+                        self.point_samples_dict[(x, y, z)] = 0
             
 
     def setup_optimizers(self) -> Optimizers:
@@ -510,15 +522,18 @@ class Trainer:
             model_output, loss_dict, metrics_dict = self.pipeline.get_train_loss_dict(step=step)
             loss = functools.reduce(torch.add, loss_dict.values())
         if self.config.rerun_log_samples:
-            # rerun the pipeline to get the samples
+            # self.update_samples_position(model_output["ray_samples_list"], step)
+            points = model_output["ray_samples_list"][0].frustums.get_positions().cpu().detach().reshape(-1, 3)
+            points_downsampled = points[::1000]
             rr.set_time_sequence("iteration_step", step)
-            ray_samples_list = model_output["ray_samples_list"]
-            for i, samples in enumerate(ray_samples_list):
-                rr.log(f"ray_samples_{i}", 
-                       rr.Points3D(samples.frustums.get_positions().cpu().detach().numpy())
+            rr.log(
+                "point_cloud",
+                rr.Points3D(
+                    positions=points_downsampled.numpy(),
+                    colors=torch.tensor([[1, 0, 0]] * points_downsampled.shape[0]).numpy(),
                 )
+            )
 
-        # self._update_samples_position(ray_samples_list) #TODO: visualize the samples position in rerun viewer{TSC}
         self.grad_scaler.scale(loss).backward()  # type: ignore
         needs_step = [
             group
@@ -578,38 +593,53 @@ class Trainer:
             group = "Eval Images"
             for image_name, image in images_dict.items():
                 writer.put_image(name=group + "/" + image_name, image=image, step=step)
-            writer.put_3d_rgb(name=group + "/Sample Point Cloud", point_cloud=self._samples_position_to_point_cloud(), step=step)
 
         # all eval images
         if step_check(step, self.config.steps_per_eval_all_images):
             metrics_dict = self.pipeline.get_average_eval_image_metrics(step=step)
             writer.put_dict(name="Eval Images Metrics Dict (all images)", scalar_dict=metrics_dict, step=step)
 
-    # # TODO{TSC}: visualize the samples position in rerun viewer
-    # def _update_samples_position(self, samples_list: List[RaySamples]) -> None:
-    #     """Update the samples position for debugging purposes"""
-    #     # only consider the last proposal samples
-    #     samples = samples_list[-1]
-    #     positions = samples.frustums.get_positions()
-    #     # convert positions to list of tuples
-    #     positions = [tuple(position.cpu().detach()) for position in positions]
-    #     for position in positions:
-    #         if position not in self.point_samples:
-    #             self.point_samples[position] = 1
-    #         else:
-    #             self.point_samples[position] += 1
+    def update_samples_position(self, ray_samples_list: List[RaySamples], step) -> None:
+        """Update the samples position for visualization in rerun viewer
 
-    def _samples_position_to_point_cloud(self) -> Float[Tensor, "N 6"]:
-        """Draw the samples position for debugging purposes"""
-        max_samples = max(self.point_samples.values())
-        # color map for the points, 0-1 to rgb
-        import matplotlib.cm as cm
-        import numpy as np
-        cmap = cm.get_cmap("jet")
-        pcl = [
-            position + (cmap(count / max_samples)[:3],)
-            for position, count in self.point_samples.items()
-        ]
-        pcl = np.array(pcl)
-        return pcl
+        Args:
+            ray_samples_list: List of RaySamples
+        """
+
+        for i, samples in enumerate(ray_samples_list):
+            points: torch.Tensor = samples.frustums.get_positions().cpu().detach().reshape(-1, 3)
         
+            # 使用向量化操作将点转换为索引
+            indices = ((points - self.aabb[0]) // self.samples_dict_step).int()
+            valid_indices_mask = (indices >= 0) & (indices < 20)
+            valid_indices = indices[valid_indices_mask.all(dim=1)]
+        
+            # 使用就地操作更新point_samples_dict
+            for ind in valid_indices:
+                ind_tuple = tuple(ind.tolist())
+                self.point_samples_dict[ind_tuple] += 1
+                if self.point_samples_dict[ind_tuple] > self.samples_count_max:
+                    self.samples_count_max = self.point_samples_dict[ind_tuple]
+    
+        # 在rerun viewer中绘制点云
+        pts = torch.tensor([self.ind_to_point(ind) for ind, count in self.point_samples_dict.items() if count > 0])
+        colors = torch.tensor([self.count_to_rgb(count) for ind, count in self.point_samples_dict.items() if count > 0])
+        labels = [f"{count}" for ind, count in self.point_samples_dict.items() if count > 0]
+        rr.set_time_sequence("iteration_step", step)
+        rr.log("point_cloud", rr.Points3D(
+            positions=pts.cpu().detach().numpy(),
+            colors=colors.cpu().detach().numpy(),
+            labels=labels)
+        )
+
+    def ind_to_point(self, ind: Tuple[int, int, int]) -> torch.Tensor:
+        """Convert index to point"""
+        x = ind[0] * self.samples_dict_step[0] + self.aabb[0][0]
+        y = ind[1] * self.samples_dict_step[1] + self.aabb[0][1]
+        z = ind[2] * self.samples_dict_step[2] + self.aabb[0][2]
+        return torch.tensor([x, y, z])
+
+    def count_to_rgb(self, count: int) -> torch.Tensor:
+        """Convert count to rgb"""
+        scale = count / self.samples_count_max
+        return torch.tensor([1 - scale, scale, 0])

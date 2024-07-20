@@ -170,8 +170,7 @@ events.out.*
 
 # Data
 # /data
-/nerfstudio/nerfstudio
-/nerfstudio/data
+/data/nerfstudio
 # Misc
 old/
 temp*
