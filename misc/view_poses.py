@@ -40,23 +40,31 @@ class PoseViewer:
             self.rgb_paths.append(os.path.join(base_path,frame['file_path']))
 
     def plot(self, is_scale_pose=False, aabb_scale=1.0, near=0.05, far=10.0):
+        # rr.init("ycb_box", spawn = True)
+        rr.init(
+            "nerf_samples",
+            recording_id="7a12aa85-8d31-40b5-9e67-599c4e164c93"
+        )
+        rr.connect()
         scale_factor = 1.0
         if is_scale_pose:
             scale_factor = 1.0 / float(np.max(np.abs(np.array(self.poses)[:, :3, 3])))
         print(f"{scale_factor=}")
         # draw a red point for the origin
+        rr.log("scene_box", rr.Clear(recursive=True))
+        rr.log("world", rr.Clear(recursive=True))
         rr.log("scene_box", rr.Boxes3D(centers=[0, 0, 0], sizes=[aabb_scale, aabb_scale, aabb_scale]), static=True)
         
         for i, cam_to_world in enumerate(self.poses):
+            # which is already in OpenGL convention
             pose = cam_to_world.numpy()
-            # trans from blender to rerun/openCV
-            pose = np.array([[0, 1, 0, 0], [1, 0, 0, 0], [0, 0, -1, 0], [0, 0, 0, 1]]) @ pose
             pose[:3, 3] *= scale_factor
-            time = i * 0.1
-            rr.set_time_seconds("stable_time",time)
+            rr.set_time_sequence("stable_time",i)
             """Logs a point cloud and a perspective camera looking at it."""
             rgb = np.array(Image.open(self.rgb_paths[i]))
-            rr.log("world/cam", rr.Pinhole(image_from_camera=self.K))
+            rr.log("world/cam", rr.Pinhole(image_from_camera=self.K,
+                                           camera_xyz=rr.ViewCoordinates.RUB
+            ))
             rr.log("world/cam", rr.Transform3D(
                 translation=pose[:3, 3].squeeze(),
                 mat3x3=pose[:3, :3].squeeze(),
@@ -74,8 +82,10 @@ class PoseViewer:
             u = u[::4]
             v = v[::4]
             d = d[::4]
-            # # get the 3D points xyz
+            # get the 3D points xyz
             pcl_xyz_in_cam = np.linalg.inv(self.K) @ (d * np.stack([u, v, np.ones_like(u)], axis=0)) # (3, N)
+            # OpenCV to OpenGL, RDF to RUB
+            pcl_xyz_in_cam = np.array([[1, 0, 0], [0, -1, 0], [0, 0, -1]]) @ pcl_xyz_in_cam
             pcl_xyz_in_world = pose[:3, :3] @ pcl_xyz_in_cam + pose[:3, 3][:, None]
             rr.log("world/pcl", rr.Points3D(pcl_xyz_in_world.T, colors=rgb[v, u], radii=0.001 * np.ones_like(d)))
     
@@ -86,10 +96,9 @@ class PoseViewer:
         for i, frame in enumerate(frames):
             pose = self.poses[i].numpy()
             pose = np.linalg.inv(pose)
-            # then flip the y and z axis,
-            # because the camera coordinate system is different from the world coordinate system
+            # from OpenGL to OpenCV: RUB to RDF
             # https://docs.nerf.studio/quickstart/data_conventions.html#
-            pose = np.array([[0, 1, 0, 0], [1, 0, 0, 0], [0, 0, -1, 0], [0, 0, 0, 1]]) @ pose
+            pose = pose @ np.array([[1, 0, 0, 0], [0, -1, 0, 0], [0, 0, -1, 0], [0, 0, 0, 1]])
             frame['transform_matrix'] = pose.tolist()
         with open(os.path.join(base_path,save_path), 'w') as f:
             json.dump(json_metadata, f, indent=4)
@@ -98,7 +107,6 @@ class PoseViewer:
 
 if __name__ == "__main__":
     from argparse import ArgumentParser
-    rr.init("ycb_box", spawn = True)
     parser = ArgumentParser()
     parser.add_argument("--is_scale_pose", type=bool, default=False)
     parser.add_argument("--JsonPath", type=str, required=True)
