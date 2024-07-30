@@ -125,4 +125,7 @@
   "eslint.packageManager": "yarn",
   "search.useIgnoreFiles": false,
   "search.useParentIgnoreFiles": false,
+  "cSpell.words": [
+    "nerfstudio"
+  ],
 }

@@ -1,12 +1,6 @@
-from matplotlib import pyplot as plt
 import torch
 import sys
 sys.path.append("../")
-from mpl_toolkits.mplot3d import Axes3D
-from nerfstudio.cameras.cameras import Cameras, CameraType
-from nerfstudio.model_components import ray_samplers
-from nerfstudio.utils import plotly_utils as vis
-# import open3d as o3d
 import numpy as np
 import json
 from PIL import Image
@@ -41,11 +35,24 @@ class PoseViewer:
 
     def plot(self, is_scale_pose=False, aabb_scale=1.0, near=0.05, far=10.0):
         # rr.init("ycb_box", spawn = True)
+        # rec = rr.new_recording(
         rr.init(
             "nerf_samples",
-            recording_id="7a12aa85-8d31-40b5-9e67-599c4e164c93"
+            init_logging=True,
+            spawn=True
+            # recording_id="7a12aa85-8d31-40b5-9e67-599c4e164c93"
+            # recording_id="test"
         )
-        rr.connect()
+        rec = rr.new_recording(
+            application_id="nerf",
+            recording_id="test"
+        )
+        print(f"type of rec: {type(rec)}")
+        # rr.spawn(recording=rec.to_native())
+        # rr.connect()
+        rr.log_file_from_path("/media/Q/eulerBackUp/Box/Box/rerun_samples.rrd",recording=rec.to_native())
+        # with rec:
+        #     rr.log_file_from_path("/media/Q/eulerBackUp/Box/Box/rerun_samples.rrd")
         scale_factor = 1.0
         if is_scale_pose:
             scale_factor = 1.0 / float(np.max(np.abs(np.array(self.poses)[:, :3, 3])))
@@ -54,12 +61,12 @@ class PoseViewer:
         rr.log("scene_box", rr.Clear(recursive=True))
         rr.log("world", rr.Clear(recursive=True))
         rr.log("scene_box", rr.Boxes3D(centers=[0, 0, 0], sizes=[aabb_scale, aabb_scale, aabb_scale]), static=True)
-        
+
         for i, cam_to_world in enumerate(self.poses):
             # which is already in OpenGL convention
             pose = cam_to_world.numpy()
             pose[:3, 3] *= scale_factor
-            rr.set_time_sequence("stable_time",i)
+            rr.set_time_seconds("stable_time",i*0.1)
             """Logs a point cloud and a perspective camera looking at it."""
             rgb = np.array(Image.open(self.rgb_paths[i]))
             rr.log("world/cam", rr.Pinhole(image_from_camera=self.K,
@@ -88,7 +95,7 @@ class PoseViewer:
             pcl_xyz_in_cam = np.array([[1, 0, 0], [0, -1, 0], [0, 0, -1]]) @ pcl_xyz_in_cam
             pcl_xyz_in_world = pose[:3, :3] @ pcl_xyz_in_cam + pose[:3, 3][:, None]
             rr.log("world/pcl", rr.Points3D(pcl_xyz_in_world.T, colors=rgb[v, u], radii=0.001 * np.ones_like(d)))
-    
+
     def invert_pose_and_save(self, save_path):
         json_metadata = json.load(open(self.JsonPath))
         base_path = os.path.dirname(self.JsonPath)
@@ -103,7 +110,7 @@ class PoseViewer:
         with open(os.path.join(base_path,save_path), 'w') as f:
             json.dump(json_metadata, f, indent=4)
         print(f"Saved to {save_path}")
-        
+
 
 if __name__ == "__main__":
     from argparse import ArgumentParser
@@ -118,7 +125,7 @@ if __name__ == "__main__":
     print(f"total poses: {len(pose_viewer.poses)}")
     pose_viewer.plot(is_scale_pose=args.is_scale_pose, aabb_scale=args.aabb_scale,near=args.near,far=args.far)
     # pose_viewer.invert_pose_and_save("box_21_c2w.json")
-    
-        
 
-    
+
+
+

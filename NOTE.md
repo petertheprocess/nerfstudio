@@ -46,3 +46,8 @@ ProposalSampler is responsible for sampling points along the rays
 先经过SpacedSampler, 里面使用了near和far的属性，然后再经过PdfSampler
 
 目前状态：如果把initial_samples设置为uniform，那么loss乱跳，全黑。
+
+
+## 加入depth guide的sample
+dataManager.train_dataset.cameras里可以得到相机的z轴，
+对于每个ray，计算夹角算出对应的ray distance，然后在上面采样

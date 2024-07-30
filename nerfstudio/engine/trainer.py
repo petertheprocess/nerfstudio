@@ -15,6 +15,7 @@
 """
 Code to train model.
 """
+
 from __future__ import annotations
 
 import dataclasses
@@ -114,7 +115,7 @@ class Trainer:
     pipeline: VanillaPipeline
     optimizers: Optimizers
     callbacks: List[TrainingCallback]
-    point_samples: Dict[Tuple[float, float, float], int] # variable to store point samples for visualization
+    point_samples: Dict[Tuple[float, float, float], int]  # variable to store point samples for visualization
 
     def __init__(self, config: TrainerConfig, local_rank: int = 0, world_size: int = 1) -> None:
         self.train_lock = Lock()
@@ -224,10 +225,11 @@ class Trainer:
         profiler.setup_profiler(self.config.logging, writer_log_path)
 
         if self.config.rerun_log_samples:
+            print("====use rerun to view samples====")
             import rerun as rr
+
             rr.init("nerf_samples")
             rr.save(os.path.join(self.config.output_dir, "rerun_samples.rrd"))
-            
 
     def setup_optimizers(self) -> Optimizers:
         """Helper to set up the optimizers
@@ -514,9 +516,7 @@ class Trainer:
             rr.set_time_sequence("iteration_step", step)
             ray_samples_list = model_output["ray_samples_list"]
             for i, samples in enumerate(ray_samples_list):
-                rr.log(f"ray_samples_{i}", 
-                       rr.Points3D(samples.frustums.get_positions().cpu().detach().numpy())
-                )
+                rr.log(f"ray_samples_{i}", rr.Points3D(samples.frustums.get_positions().cpu().detach().numpy()))
 
         # self._update_samples_position(ray_samples_list) #TODO: visualize the samples position in rerun viewer{TSC}
         self.grad_scaler.scale(loss).backward()  # type: ignore
@@ -563,7 +563,6 @@ class Trainer:
             writer.put_dict(name="Eval Loss Dict", scalar_dict=eval_loss_dict, step=step)
             writer.put_dict(name="Eval Metrics Dict", scalar_dict=eval_metrics_dict, step=step)
 
-
         # one eval image
         if step_check(step, self.config.steps_per_eval_image):
             with TimeWriter(writer, EventName.TEST_RAYS_PER_SEC, write=False) as test_t:
@@ -578,7 +577,9 @@ class Trainer:
             group = "Eval Images"
             for image_name, image in images_dict.items():
                 writer.put_image(name=group + "/" + image_name, image=image, step=step)
-            writer.put_3d_rgb(name=group + "/Sample Point Cloud", point_cloud=self._samples_position_to_point_cloud(), step=step)
+            writer.put_3d_rgb(
+                name=group + "/Sample Point Cloud", point_cloud=self._samples_position_to_point_cloud(), step=step
+            )
 
         # all eval images
         if step_check(step, self.config.steps_per_eval_all_images):
@@ -605,11 +606,8 @@ class Trainer:
         # color map for the points, 0-1 to rgb
         import matplotlib.cm as cm
         import numpy as np
+
         cmap = cm.get_cmap("jet")
-        pcl = [
-            position + (cmap(count / max_samples)[:3],)
-            for position, count in self.point_samples.items()
-        ]
+        pcl = [position + (cmap(count / max_samples)[:3],) for position, count in self.point_samples.items()]
         pcl = np.array(pcl)
         return pcl
-        
