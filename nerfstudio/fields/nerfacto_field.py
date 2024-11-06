@@ -202,12 +202,12 @@ class NerfactoField(Field):
 
     def get_density(self, ray_samples: RaySamples) -> Tuple[Tensor, Tensor]:
         """Computes and returns the densities."""
+        positions = ray_samples.frustums.get_positions() # center of the frustum, not weighted by mass
         if self.spatial_distortion is not None:
-            positions = ray_samples.frustums.get_positions()
             positions = self.spatial_distortion(positions)
             positions = (positions + 2.0) / 4.0
         else:
-            positions = SceneBox.get_normalized_positions(ray_samples.frustums.get_positions(), self.aabb)
+            positions = SceneBox.get_normalized_positions(positions, self.aabb)
         # Make sure the tcnn gets inputs between 0 and 1.
         selector = ((positions > 0.0) & (positions < 1.0)).all(dim=-1)
         positions = positions * selector[..., None]
@@ -224,6 +224,7 @@ class NerfactoField(Field):
         # from smaller internal (float16) parameters.
         density = self.average_init_density * trunc_exp(density_before_activation.to(positions))
         density = density * selector[..., None]
+        # base_mlp_out is the input density_embedding for the get_outputs method
         return density, base_mlp_out
 
     def get_outputs(

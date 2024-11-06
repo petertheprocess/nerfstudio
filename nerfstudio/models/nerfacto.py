@@ -40,12 +40,13 @@ from nerfstudio.model_components.losses import (
     pred_normal_loss,
     scale_gradients_by_distance_squared,
 )
-from nerfstudio.model_components.ray_samplers import ProposalNetworkSampler, UniformSampler
+from nerfstudio.model_components.ray_samplers import ProposalNetworkSampler, SquareSampler, UniformSampler
 from nerfstudio.model_components.renderers import AccumulationRenderer, DepthRenderer, NormalsRenderer, RGBRenderer
 from nerfstudio.model_components.scene_colliders import NearFarCollider
 from nerfstudio.model_components.shaders import NormalsShader
 from nerfstudio.models.base_model import Model, ModelConfig
 from nerfstudio.utils import colormaps
+from nerfstudio.utils.mask_eval_utils import mask_peak_signal_to_noise_ratio, mask_structural_similarity_index_measure
 
 
 @dataclass
@@ -94,7 +95,7 @@ class NerfactoModelConfig(ModelConfig):
         ]
     )
     """Arguments for the proposal density fields."""
-    proposal_initial_sampler: Literal["piecewise", "uniform"] = "piecewise"
+    proposal_initial_sampler: Literal["piecewise", "uniform", "square"] = "piecewise"
     """Initial sampler for the proposal network. Piecewise is preferred for unbounded scenes."""
     interlevel_loss_mult: float = 1.0
     """Proposal loss multiplier."""
@@ -216,6 +217,8 @@ class NerfactoModel(Model):
         initial_sampler = None  # None is for piecewise as default (see ProposalNetworkSampler)
         if self.config.proposal_initial_sampler == "uniform":
             initial_sampler = UniformSampler(single_jitter=self.config.use_single_jitter)
+        elif self.config.proposal_initial_sampler == "square":
+            initial_sampler = SquareSampler(single_jitter=self.config.use_single_jitter)
 
         self.proposal_sampler = ProposalNetworkSampler(
             num_nerf_samples_per_ray=self.config.num_nerf_samples_per_ray,
@@ -241,6 +244,7 @@ class NerfactoModel(Model):
 
         # losses
         self.rgb_loss = MSELoss()
+        # self.alpha_loss = MSELoss()
         self.step = 0
         # metrics
         from torchmetrics.functional import structural_similarity_index_measure
@@ -248,6 +252,8 @@ class NerfactoModel(Model):
         from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 
         self.psnr = PeakSignalNoiseRatio(data_range=1.0)
+        self.mask_psnr = mask_peak_signal_to_noise_ratio
+        self.mask_ssim = mask_structural_similarity_index_measure
         self.ssim = structural_similarity_index_measure
         self.lpips = LearnedPerceptualImagePatchSimilarity(normalize=True)
         self.step = 0
@@ -349,10 +355,27 @@ class NerfactoModel(Model):
 
     def get_metrics_dict(self, outputs, batch):
         metrics_dict = {}
-        gt_rgb = batch["image"].to(self.device)  # RGB or RGBA image
-        gt_rgb = self.renderer_rgb.blend_background(gt_rgb)  # Blend if RGBA
+        gt_rgba = batch["image"].to(self.device)  # RGB or RGBA image
+        # [rays, 4]
+        # assert False, f"gtrgba shape: {gt_rgba.shape}"
+        gt_rgb = self.renderer_rgb.blend_background(gt_rgba)  # Blend if RGBA
         predicted_rgb = outputs["rgb"]
-        metrics_dict["psnr"] = self.psnr(predicted_rgb, gt_rgb)
+        # Switch images from [H, W, C] to [1, C, H, W] for metrics computations
+        gt_rgb = torch.moveaxis(gt_rgb, -1, 0)
+        predicted_rgb = torch.moveaxis(predicted_rgb, -1, 0)
+        gt_rgba = torch.moveaxis(gt_rgba, -1, 0)
+        mask = gt_rgba[3, :] > 0.2
+        # metrics_dict["psnr"] = self.psnr(predicted_rgb, gt_rgb)
+        rgb_psnr = self.mask_psnr(predicted_rgb, gt_rgb, mask, data_range=1)
+        if gt_rgb.shape[-1] == 4:
+            ocupancy = gt_rgb[..., -1]
+            pred_accumulation = outputs["accumulation"]
+            ocupancy_psnr = self.psnr(ocupancy, pred_accumulation)
+            metrics_dict["occupancy_psnr"] = ocupancy_psnr
+            metrics_dict["rgb_psnr"] = rgb_psnr
+            metrics_dict["psnr"] = rgb_psnr * 0.75 + ocupancy_psnr * 0.25
+        else:
+            metrics_dict["psnr"] = rgb_psnr
 
         if self.training:
             metrics_dict["distortion"] = distortion_loss(outputs["weights_list"], outputs["ray_samples_list"])
@@ -363,12 +386,13 @@ class NerfactoModel(Model):
     def get_loss_dict(self, outputs, batch, metrics_dict=None):
         loss_dict = {}
         image = batch["image"].to(self.device)
+        # gt_alpha = image[..., -1]
         pred_rgb, gt_rgb = self.renderer_rgb.blend_background_for_loss_computation(
             pred_image=outputs["rgb"],
             pred_accumulation=outputs["accumulation"],
             gt_image=image,
         )
-
+        # loss_dict["alpha_loss"] = self.alpha_loss(gt_alpha, outputs["accumulation"])
         loss_dict["rgb_loss"] = self.rgb_loss(gt_rgb, pred_rgb)
         if self.training:
             loss_dict["interlevel_loss"] = self.config.interlevel_loss_mult * interlevel_loss(
@@ -393,9 +417,9 @@ class NerfactoModel(Model):
     def get_image_metrics_and_images(
         self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
     ) -> Tuple[Dict[str, float], Dict[str, torch.Tensor]]:
-        gt_rgb = batch["image"].to(self.device)
+        gt_rgba = batch["image"].to(self.device)
         predicted_rgb = outputs["rgb"]  # Blended with background (black if random background)
-        gt_rgb = self.renderer_rgb.blend_background(gt_rgb)
+        gt_rgb = self.renderer_rgb.blend_background(gt_rgba)
         acc = colormaps.apply_colormap(outputs["accumulation"])
         depth = colormaps.apply_depth_colormap(
             outputs["depth"],
@@ -409,14 +433,31 @@ class NerfactoModel(Model):
         # Switch images from [H, W, C] to [1, C, H, W] for metrics computations
         gt_rgb = torch.moveaxis(gt_rgb, -1, 0)[None, ...]
         predicted_rgb = torch.moveaxis(predicted_rgb, -1, 0)[None, ...]
-
-        psnr = self.psnr(gt_rgb, predicted_rgb)
-        ssim = self.ssim(gt_rgb, predicted_rgb)
+        gt_rgba = torch.moveaxis(gt_rgba, -1, 0)[None, ...]
+        mask = gt_rgba[:, 3, :, :] > 0.2
+        # psnr = self.psnr(gt_rgb, predicted_rgb)
+        # ssim = self.ssim(gt_rgb, predicted_rgb)
+        psnr = self.mask_psnr(gt_rgb, predicted_rgb, mask)
+        ssim = self.mask_ssim(gt_rgb, predicted_rgb, mask)
         lpips = self.lpips(gt_rgb, predicted_rgb)
 
         # all of these metrics will be logged as scalars
         metrics_dict = {"psnr": float(psnr.item()), "ssim": float(ssim)}  # type: ignore
         metrics_dict["lpips"] = float(lpips)
+        # metrics_dict["psnr"] = self.psnr(predicted_rgb, gt_rgb)
+        mask = gt_rgba[:, 3, :, :] > 0.3
+        rgb_psnr = self.mask_psnr(predicted_rgb, gt_rgb, mask, data_range=1)
+        if gt_rgba.shape[1] == 4:
+            ocupancy = gt_rgba[:, 3, :, :]
+            pred_accumulation = outputs["accumulation"]
+            pred_accumulation = torch.moveaxis(pred_accumulation, -1, 0)
+            assert ocupancy.shape == pred_accumulation.shape, f"{ocupancy.shape} != {pred_accumulation.shape}"
+            ocupancy_psnr = self.psnr(ocupancy, pred_accumulation)
+            metrics_dict["occupancy_psnr"] = float(ocupancy_psnr.item())
+            metrics_dict["rgb_psnr"] = float(rgb_psnr.item())
+            metrics_dict["psnr"] = rgb_psnr * 0.75 + ocupancy_psnr * 0.25
+        else:
+            metrics_dict["psnr"] = rgb_psnr
 
         images_dict = {"img": combined_rgb, "accumulation": combined_acc, "depth": combined_depth}
 

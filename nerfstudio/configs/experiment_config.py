@@ -36,6 +36,8 @@ class ExperimentConfig(InstantiateConfig):
     """Full config contents for running an experiment. Any experiment types (like training) will be
     subclassed from this, and must have their _target field defined accordingly."""
 
+    rerun_log_samples: bool = True
+    """Whether to log samples to rerun"""
     output_dir: Path = Path("outputs")
     """relative or absolute output directory to save all checkpoints and logging"""
     method_name: Optional[str] = None

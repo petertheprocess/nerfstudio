@@ -123,4 +123,9 @@
   "python.analysis.typeCheckingMode": "basic",
   "python.analysis.diagnosticMode": "workspace",
   "eslint.packageManager": "yarn",
+  "search.useIgnoreFiles": false,
+  "search.useParentIgnoreFiles": false,
+  "cSpell.words": [
+    "nerfstudio"
+  ],
 }
