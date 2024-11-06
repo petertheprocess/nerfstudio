@@ -89,6 +89,43 @@ class MultiStepScheduler(Scheduler):
 
 
 @dataclass
+class MultiResolutionHashCorseToFineSchedulerConfig(SchedulerConfig):
+    """
+    Implementation of
+    Robust Camera Pose Refinement for Multi-Resolution Hash Encoding
+    https://www.alphaxiv.org/abs/2302.01571
+    """
+
+    _target: Type = field(default_factory=lambda: MultiResolutionHashCorseToFineScheduler)
+    res_level: int = 3
+    """The index of resolution level"""
+    total_res_levels: int = 4
+    """The total number of resolution levels"""
+    max_steps: int = 100000
+    """The maximum number of steps."""
+
+
+class MultiResolutionHashCorseToFineScheduler(Scheduler):
+    """MultiResolutionHashCorseToFineScheduler"""
+
+    config: MultiResolutionHashCorseToFineSchedulerConfig
+
+    def get_scheduler(self, optimizer: Optimizer, lr_init: float) -> LRScheduler:
+        def func(step):
+            alpha = self.config.total_res_levels * step / self.config.max_steps  # [0, total_res_levels]
+            if alpha < self.config.res_level:
+                lr = 0
+            elif alpha < self.config.res_level + 1:
+                lr = 0.5 * (1 - np.cos((alpha - self.config.res_level) * np.pi))
+            else:
+                lr = 1
+            return lr * lr_init
+
+        scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=func)
+        return scheduler
+
+
+@dataclass
 class ExponentialDecaySchedulerConfig(SchedulerConfig):
     """Config for exponential decay scheduler with warmup"""
 
